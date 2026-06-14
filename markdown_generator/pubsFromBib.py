@@ -1,160 +1,142 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# # Publications markdown generator for academicpages
-# 
-# Takes a set of bibtex of publications and converts them for use with [academicpages.github.io](academicpages.github.io). This is an interactive Jupyter notebook ([see more info here](http://jupyter-notebook-beginner-guide.readthedocs.io/en/latest/what_is_jupyter.html)). 
-# 
-# The core python code is also in `pubsFromBibs.py`. 
-# Run either from the `markdown_generator` folder after replacing updating the publist dictionary with:
-# * bib file names
-# * specific venue keys based on your bib file preferences
-# * any specific pre-text for specific files
-# * Collection Name (future feature)
-# 
-# TODO: Make this work with other databases of citations, 
-# TODO: Merge this with the existing TSV parsing solution
-
+# Reads a single .bib file (mypublist.bib) and generates one Markdown file
+# per entry in ../_publications/. Handles article, inproceedings, incollection,
+# misc, and any other type by detecting which venue field is present.
 
 from pybtex.database.input import bibtex
-import pybtex.database.input.bibtex 
+import pybtex.database.input.bibtex
 from time import strptime
-import string
 import html
 import os
 import re
 
-#todo: incorporate different collection types rather than a catch all publications, requires other changes to template
-publist = {
-    "proceeding": {
-        "file" : "proceedings.bib",
-        "venuekey": "booktitle",
-        "venue-pretext": "In the proceedings of ",
-        "collection" : {"name":"publications",
-                        "permalink":"/publication/"}
-        
-    },
-    "journal":{
-        "file": "pubs.bib",
-        "venuekey" : "journal",
-        "venue-pretext" : "",
-        "collection" : {"name":"publications",
-                        "permalink":"/publication/"}
-    } 
-}
+BIB_FILE = "../mypublist.bib"
 
-html_escape_table = {
-    "&": "&amp;",
-    '"': "&quot;",
-    "'": "&apos;"
-    }
+html_escape_table = {"&": "&amp;", '"': "&quot;", "'": "&apos;"}
 
 def html_escape(text):
-    """Produce entities within text."""
-    return "".join(html_escape_table.get(c,c) for c in text)
+    return "".join(html_escape_table.get(c, c) for c in text)
 
+def get_category(entry_type):
+    if entry_type in ("article",):
+        return "manuscripts"
+    if entry_type in ("inproceedings", "conference"):
+        return "conferences"
+    if entry_type in ("incollection",):
+        return "books"
+    if entry_type == "misc":
+        return "conferences"
+    return "manuscripts"
 
-for pubsource in publist:
-    parser = bibtex.Parser()
-    bibdata = parser.parse_file(publist[pubsource]["file"])
+def get_venue(entry_type, fields):
+    """Return (venue_pretext, venue_value) based on entry type and available fields."""
+    if entry_type in ("article",):
+        return "", fields.get("journal", "")
+    if entry_type in ("inproceedings", "conference"):
+        return "In the proceedings of ", fields.get("booktitle", "")
+    if entry_type in ("incollection",):
+        return "In ", fields.get("booktitle", "")
+    if entry_type == "misc":
+        return "", fields.get("howpublished", fields.get("note", ""))
+    # fallback: try journal then booktitle
+    if "journal" in fields:
+        return "", fields["journal"]
+    if "booktitle" in fields:
+        return "In ", fields["booktitle"]
+    return "", fields.get("publisher", "")
 
-    #loop through the individual references in a given bibtex file
-    for bib_id in bibdata.entries:
-        #reset default date
-        pub_year = "1900"
-        pub_month = "01"
-        pub_day = "01"
-        
-        b = bibdata.entries[bib_id].fields
-        
-        try:
-            pub_year = f'{b["year"]}'
+import pybtex.errors
+pybtex.errors.set_strict_mode(False)
 
-            #todo: this hack for month and day needs some cleanup
-            if "month" in b.keys(): 
-                if(len(b["month"])<3):
-                    pub_month = "0"+b["month"]
-                    pub_month = pub_month[-2:]
-                elif(b["month"] not in range(12)):
-                    tmnth = strptime(b["month"][:3],'%b').tm_mon   
-                    pub_month = "{:02d}".format(tmnth) 
-                else:
-                    pub_month = str(b["month"])
-            if "day" in b.keys(): 
-                pub_day = str(b["day"])
+parser = bibtex.Parser()
+bibdata = parser.parse_file(BIB_FILE)
 
-                
-            pub_date = pub_year+"-"+pub_month+"-"+pub_day
-            
-            #strip out {} as needed (some bibtex entries that maintain formatting)
-            clean_title = b["title"].replace("{", "").replace("}","").replace("\\","").replace(" ","-")    
+os.makedirs("../_publications", exist_ok=True)
 
-            url_slug = re.sub("\\[.*\\]|[^a-zA-Z0-9_-]", "", clean_title)
-            url_slug = url_slug.replace("--","-")
+for bib_id in bibdata.entries:
+    entry = bibdata.entries[bib_id]
+    b = entry.fields
+    entry_type = entry.type.lower()
 
-            md_filename = (str(pub_date) + "-" + url_slug + ".md").replace("--","-")
-            html_filename = (str(pub_date) + "-" + url_slug).replace("--","-")
+    pub_year = "1900"
+    pub_month = "01"
+    pub_day = "01"
 
-            #Build Citation from text
-            citation = ""
+    try:
+        pub_year = str(b["year"])
 
-            #citation authors - todo - add highlighting for primary author?
-            for author in bibdata.entries[bib_id].persons["author"]:
-                citation = citation+" "+author.first_names[0]+" "+author.last_names[0]+", "
-
-            #citation title
-            citation = citation + "\"" + html_escape(b["title"].replace("{", "").replace("}","").replace("\\","")) + ".\""
-
-            #add venue logic depending on citation type
-            venue = publist[pubsource]["venue-pretext"]+b[publist[pubsource]["venuekey"]].replace("{", "").replace("}","").replace("\\","")
-
-            citation = citation + " " + html_escape(venue)
-            citation = citation + ", " + pub_year + "."
-
-            
-            ## YAML variables
-            md = "---\ntitle: \""   + html_escape(b["title"].replace("{", "").replace("}","").replace("\\","")) + '"\n'
-            
-            md += """collection: """ +  publist[pubsource]["collection"]["name"]
-
-            md += """\npermalink: """ + publist[pubsource]["collection"]["permalink"]  + html_filename
-            
-            note = False
-            if "note" in b.keys():
-                if len(str(b["note"])) > 5:
-                    md += "\nexcerpt: '" + html_escape(b["note"]) + "'"
-                    note = True
-
-            md += "\ndate: " + str(pub_date) 
-
-            md += "\nvenue: '" + html_escape(venue) + "'"
-            
-            url = False
-            if "url" in b.keys():
-                if len(str(b["url"])) > 5:
-                    md += "\npaperurl: '" + b["url"] + "'"
-                    url = True
-
-            md += "\ncitation: '" + html_escape(citation) + "'"
-
-            md += "\n---"
-
-            
-            ## Markdown description for individual page
-            if note:
-                md += "\n" + html_escape(b["note"]) + "\n"
-
-            if url:
-                md += "\n[Access paper here](" + b["url"] + "){:target=\"_blank\"}\n" 
+        if "month" in b:
+            m = b["month"].strip()
+            if m.isdigit():
+                pub_month = m.zfill(2)
             else:
-                md += "\nUse [Google Scholar](https://scholar.google.com/scholar?q="+html.escape(clean_title.replace("-","+"))+"){:target=\"_blank\"} for full citation"
+                try:
+                    pub_month = "{:02d}".format(strptime(m[:3], '%b').tm_mon)
+                except ValueError:
+                    pass
 
-            md_filename = os.path.basename(md_filename)
+        if "day" in b:
+            pub_day = str(b["day"])
 
-            with open("../_publications/" + md_filename, 'w', encoding="utf-8") as f:
-                f.write(md)
-            print(f'SUCCESSFULLY PARSED {bib_id}: \"', b["title"][:60],"..."*(len(b['title'])>60),"\"")
-        # field may not exist for a reference
-        except KeyError as e:
-            print(f'WARNING Missing Expected Field {e} from entry {bib_id}: \"', b["title"][:30],"..."*(len(b['title'])>30),"\"")
-            continue
+        pub_date = f"{pub_year}-{pub_month}-{pub_day}"
+
+        raw_title = b["title"].replace("{", "").replace("}", "").replace("\\", "")
+        clean_title = raw_title.replace(" ", "-")
+        url_slug = re.sub(r"\[.*?\]|[^a-zA-Z0-9_-]", "", clean_title).replace("--", "-")[:100]
+
+        md_filename = f"{pub_date}-{url_slug}.md".replace("--", "-")
+        html_filename = f"{pub_date}-{url_slug}".replace("--", "-")
+
+        # Build citation string
+        citation = ""
+        for author in entry.persons.get("author", []):
+            first = author.first_names[0] if author.first_names else ""
+            last = author.last_names[0] if author.last_names else ""
+            citation += f" {first} {last},"
+
+        citation += f' "{html_escape(raw_title)}."'
+
+        venue_pretext, venue_val = get_venue(entry_type, b)
+        venue_val = venue_val.replace("{", "").replace("}", "").replace("\\", "")
+        venue = venue_pretext + venue_val
+        citation += f" {html_escape(venue)}, {pub_year}."
+
+        # Build markdown
+        md = f'---\ntitle: "{html_escape(raw_title)}"\n'
+        md += "collection: publications\n"
+        md += f"category: {get_category(entry_type)}\n"
+        md += f"permalink: /publication/{html_filename}\n"
+
+        note = b.get("note", "")
+        if len(note) > 5:
+            md += f"excerpt: '{html_escape(note)}'\n"
+
+        md += f"date: {pub_date}\n"
+        md += f"venue: '{html_escape(venue)}'\n"
+
+        url = b.get("url", "")
+        if len(url) > 5:
+            md += f"paperurl: '{url}'\n"
+
+        md += f"citation: '{html_escape(citation)}'\n"
+        md += "---\n"
+
+        if note and len(note) > 5:
+            md += html_escape(note) + "\n"
+
+        if url and len(url) > 5:
+            md += f'\n[Access paper here]({url}){{:target="_blank"}}\n'
+        else:
+            md += f"\nUse [Google Scholar](https://scholar.google.com/scholar?q={html.escape(clean_title.replace('-', '+'))}){{:target=\"_blank\"}} for full citation\n"
+
+        out_path = os.path.join("../_publications", os.path.basename(md_filename))
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(md)
+
+        print(f'OK  {bib_id}: "{raw_title[:70]}{"..." if len(raw_title) > 70 else ""}"')
+
+    except KeyError as e:
+        print(f'WARN missing field {e} in entry {bib_id}: "{b.get("title", "???")[:40]}"')
+        continue
